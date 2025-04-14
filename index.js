@@ -5,7 +5,6 @@ const { Readable } = require('stream');
 const fs = require('fs').promises;
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid'); // Added for unique IDs
 require('dotenv').config(); // Load environment variables
 
 const app = express();
@@ -147,102 +146,59 @@ function getDefaultValidationRules(fieldType) {
   return rules[fieldType.toLowerCase()] || rules.default;
 }
 
-// This function runs the AI extraction and saves results/errors
-async function processDocumentInBackground(taskId, docBuffer) {
-  const resultPath = path.join(__dirname, 'temp', `${taskId}.json`);
-  const errorPath = path.join(__dirname, 'temp', `${taskId}.error`);
-  const docText = docBuffer.toString('utf8'); // Convert buffer to text here
-
-  try {
-    console.log(`[${taskId}] Starting extraction...`);
-    const fields = await extractTemplateFields(docText);
-    await fs.writeFile(resultPath, JSON.stringify({ status: 'complete', fields }));
-    console.log(`[${taskId}] Extraction complete. Results saved.`);
-    // Clean up error file if process succeeded
-    try { await fs.unlink(errorPath); } catch (e) { /* ignore if file doesn't exist */ }
-  } catch (error) {
-    console.error(`[${taskId}] Error processing document:`, error);
-    const errorMessage = `Error processing document: ${error.message}`;
-    await fs.writeFile(errorPath, JSON.stringify({ status: 'error', message: errorMessage }));
-     // Clean up result file if process failed
-    try { await fs.unlink(resultPath); } catch (e) { /* ignore if file doesn't exist */ }
+function replaceFields(docText, fields) {
+  let updatedText = docText;
+  
+  for (const field of fields) {
+    // Escape special characters for regex
+    const escapedValue = field.currentValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escapedValue, 'g');
+    updatedText = updatedText.replace(regex, field.newValue);
   }
+  
+  // Optionally, you can add logic to handle the context before and after the field
+  return updatedText;
 }
 
 app.post('/upload', upload.single('document'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ message: 'No file uploaded' });
-  }
-
-  const taskId = uuidv4();
-  const tempDocPath = path.join(__dirname, 'temp', `${taskId}.txt`); // Keep original doc temporarily if needed for other ops, or just pass buffer
-  const statusPath = path.join(__dirname, 'temp', `${taskId}.json`); // Path for status/results
-
   try {
-    // Save the original document buffer temporarily (optional, could pass buffer directly)
-    // await fs.writeFile(tempDocPath, req.file.buffer);
-
-    // Create initial status file
-    await fs.writeFile(statusPath, JSON.stringify({ status: 'processing' }));
-
-    // Start background processing - IMPORTANT: no 'await' here
-    processDocumentInBackground(taskId, req.file.buffer);
-
-    // Respond immediately with the task ID
-    res.status(202).json({ taskId }); // 202 Accepted indicates processing started
-    console.log(`[${taskId}] Upload received, processing started in background.`);
-
+    if (!req.file) {
+      return res.status(400).send('No file uploaded');
+    }
+    
+    const docText = req.file.buffer.toString('utf8');
+    const fields = await extractTemplateFields(docText);
+    
+    // Store the original document text in the session
+    // In a real app, you might want to use a database or file storage
+    await fs.writeFile(path.join(__dirname, 'temp', 'document.txt'), docText);
+    
+    res.json({ fields });
   } catch (error) {
-    console.error(`[${taskId}] Error initiating upload process:`, error);
-    res.status(500).json({ message: `Error initiating document processing: ${error.message}` });
+    console.error('Error processing document:', error);
+    res.status(500).send(`Error processing document: ${error.message}`);
   }
 });
 
-// Endpoint to check the status of a task
-app.get('/status/:taskId', async (req, res) => {
-  const taskId = req.params.taskId;
-  const resultPath = path.join(__dirname, 'temp', `${taskId}.json`);
-  const errorPath = path.join(__dirname, 'temp', `${taskId}.error`);
-
+app.post('/generate', async (req, res) => {
   try {
-    // Check for error file first
-    await fs.access(errorPath);
-    const errorData = await fs.readFile(errorPath, 'utf8');
-    res.status(200).json(JSON.parse(errorData)); // Send error status
+    const { fields } = req.body;
+    
+    // Read the original document
+    const docText = await fs.readFile(path.join(__dirname, 'temp', 'document.txt'), 'utf8');
+    
+    // Replace fields with new values
+    const updatedDocText = replaceFields(docText, fields);
+    
+    // Send the updated document as a download
+    res.setHeader('Content-Disposition', 'attachment; filename="updated_document.txt"');
+    res.setHeader('Content-Type', 'text/plain');
+    res.send(updatedDocText);
   } catch (error) {
-    // Error file doesn't exist, check for result file
-    try {
-      await fs.access(resultPath);
-      const resultData = await fs.readFile(resultPath, 'utf8');
-      res.status(200).json(JSON.parse(resultData)); // Send complete status + results
-    } catch (resultError) {
-      // Neither file exists, assume still processing
-      res.status(200).json({ status: 'processing' });
-    }
+    console.error('Error generating document:', error);
+    res.status(500).send(`Error generating document: ${error.message}`);
   }
 });
-
-// Endpoint to get the results of a completed task (redundant if status includes results)
-// Kept separate for clarity, could be merged into /status logic
-app.get('/results/:taskId', async (req, res) => {
-    const taskId = req.params.taskId;
-    const resultPath = path.join(__dirname, 'temp', `${taskId}.json`);
-
-    try {
-        const resultData = await fs.readFile(resultPath, 'utf8');
-        const results = JSON.parse(resultData);
-        if (results.status === 'complete') {
-            res.status(200).json(results); // Send only if complete
-        } else {
-            // Should ideally not happen if client checks status first
-            res.status(404).json({ message: 'Results not ready or task failed.' });
-        }
-    } catch (error) {
-        console.error(`[${taskId}] Error fetching results:`, error);
-        res.status(404).json({ message: 'Results not found or task failed.' });
-    }
-});
-
 
 // Make sure temp directory exists
 app.listen(port, async () => {
