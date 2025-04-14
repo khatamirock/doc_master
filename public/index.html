@@ -1,0 +1,274 @@
+<!-- public/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SuperDOC</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    .loading {
+      display: none;
+      text-align: center;
+      margin: 20px 0;
+    }
+    .spinner-border {
+      width: 3rem;
+      height: 3rem;
+    }
+    .field-context {
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 4px;
+      margin-bottom: 10px;
+      font-family: monospace;
+    }
+    .field-preview {
+      background: #fff3cd;
+      padding: 2px 4px;
+      border-radius: 2px;
+    }
+    .field-help {
+      font-size: 0.875rem;
+      color: #6c757d;
+      margin-top: 5px;
+    }
+    .field-example {
+      font-style: italic;
+      color: #28a745;
+    }
+    .field-group {
+      border-left: 3px solid #0d6efd;
+      padding-left: 15px;
+      margin-bottom: 20px;
+    }
+    [data-tooltip] {
+      position: relative;
+      cursor: help;
+    }
+    [data-tooltip]:hover::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      bottom: 100%;
+      left: 0;
+      background: #000;
+      color: #fff;
+      padding: 5px 10px;
+      border-radius: 4px;
+      font-size: 0.875rem;
+      white-space: nowrap;
+      z-index: 1000;
+    }
+  </style>
+</head>
+<body>
+  <div class="container mt-5">
+    <h1 class="mb-4">Super-Doc- khatami</h1>
+    
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0">Step 1: Upload Document Template</h5>
+      </div>
+      <div class="card-body">
+        <form id="uploadForm" enctype="multipart/form-data">
+          <div class="mb-3">
+            <label for="document" class="form-label">Select document file (.txt, .doc, .docx)</label>
+            <input class="form-control" type="file" id="document" name="document" accept=".txt,.doc,.docx" required>
+          </div>
+          <button type="submit" class="btn btn-primary">Analyze Document</button>
+        </form>
+        <div id="uploadLoading" class="loading">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+          <p>Analyzing document with AI... This may take a few moments.</p>
+        </div>
+      </div>
+    </div>
+    
+    <div id="fieldsCard" class="card mb-4" style="display: none;">
+      <div class="card-header">
+        <h5 class="mb-0">Step 2: Fill in Template Fields</h5>
+      </div>
+      <div class="card-body">
+        <form id="generateForm">
+          <div id="fieldsContainer">
+            <!-- Fields will be inserted here dynamically -->
+          </div>
+          <button type="submit" class="btn btn-success mt-3">Generate Document</button>
+        </form>
+        <div id="generateLoading" class="loading">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+          <p>Generating your document...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const uploadForm = document.getElementById('uploadForm');
+      const generateForm = document.getElementById('generateForm');
+      const fieldsContainer = document.getElementById('fieldsContainer');
+      const fieldsCard = document.getElementById('fieldsCard');
+      const uploadLoading = document.getElementById('uploadLoading');
+      const generateLoading = document.getElementById('generateLoading');
+      
+      let fields = [];
+      
+      uploadForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        const formData = new FormData(uploadForm);
+        uploadLoading.style.display = 'block';
+        
+        try {
+          const response = await fetch('/upload', {
+            method: 'POST',
+            body: formData
+          });
+          
+          if (!response.ok) {
+            throw new Error(`Server responded with ${response.status}: ${await response.text()}`);
+          }
+          
+          const data = await response.json();
+          fields = data.fields;
+          
+          // Clear previous fields
+          fieldsContainer.innerHTML = '';
+          
+          // Create form fields
+          fields.forEach((field, index) => {
+            const fieldGroup = document.createElement('div');
+            fieldGroup.className = 'field-group';
+            
+            // Show field in context with highlighting
+            const contextBefore = field.position > 20 ? '...' : '';
+            const contextAfter = '...';
+            const fieldContext = `
+              <div class="field-context">
+                ${contextBefore}
+                <span class="field-preview">${field.currentValue}</span>
+                ${contextAfter}
+              </div>
+            `;
+            
+            // Generate example based on field type
+            const example = getFieldExample(field.fieldType);
+            
+            fieldGroup.innerHTML = `
+              ${fieldContext}
+              <label for="field_${index}" class="form-label">
+                <strong>${field.fieldName}</strong>
+                <span class="badge bg-secondary ms-2">${field.fieldType}</span>
+              </label>
+              <div class="input-group" data-tooltip="Type: ${field.fieldType}">
+                <span class="input-group-text">Current:</span>
+                <input type="text" 
+                  class="form-control" 
+                  id="field_${index}" 
+                  name="field_${index}" 
+                  value="${field.currentValue}"
+                  placeholder="${example}"
+                  required>
+              </div>
+              <div class="field-help">
+                <div class="field-example">Example: ${example}</div>
+                ${getFieldDescription(field.fieldType)}
+              </div>
+            `;
+            
+            fieldsContainer.appendChild(fieldGroup);
+          });
+          
+          // Show the fields card
+          fieldsCard.style.display = 'block';
+        } catch (error) {
+          alert(`Error: ${error.message}`);
+          console.error('Error:', error);
+        } finally {
+          uploadLoading.style.display = 'none';
+        }
+      });
+      
+      generateForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        generateLoading.style.display = 'block';
+        
+        // Collect field values
+        const updatedFields = fields.map((field, index) => {
+          return {
+            ...field,
+            newValue: document.getElementById(`field_${index}`).value
+          };
+        });
+        
+        try {
+          const response = await fetch('/generate', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ fields: updatedFields })
+          });
+          
+          if (!response.ok) {
+            throw new Error(`Server responded with ${response.status}: ${await response.text()}`);
+          }
+          
+          // Create a download link
+          const blob = await response.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.style.display = 'none';
+          a.href = url;
+          a.download = 'updated_document.txt';
+          document.body.appendChild(a);
+          a.click();
+          window.URL.revokeObjectURL(url);
+        } catch (error) {
+          alert(`Error: ${error.message}`);
+          console.error('Error:', error);
+        } finally {
+          generateLoading.style.display = 'none';
+        }
+      });
+      
+      // Helper functions for field metadata
+      function getFieldExample(fieldType) {
+        const examples = {
+          'name': 'John Smith',
+          'date': '15 June, 2025',
+          'email': 'john.smith@example.com',
+          'phone': '+1-555-123-4567',
+          'address': '500 Main St, Austin, TX 78701',
+          'company': 'Acme Corporation',
+          'title': 'Senior Software Engineer',
+          'amount': '$1,000.00',
+          'default': 'Enter value here'
+        };
+        return examples[fieldType.toLowerCase()] || examples.default;
+      }
+      
+      function getFieldDescription(fieldType) {
+        const descriptions = {
+          'name': 'Enter the full name as it should appear in the document',
+          'date': 'Use the format: DD Month, YYYY',
+          'email': 'Enter a valid email address',
+          'phone': 'Include country code and area code',
+          'address': 'Enter the complete address with street, city, state, and ZIP',
+          'company': 'Enter the official company name',
+          'title': 'Enter the professional title or position',
+          'amount': 'Enter the amount with currency symbol and decimals',
+          'default': 'Enter the replacement value'
+        };
+        return `<div class="text-muted">${descriptions[fieldType.toLowerCase()] || descriptions.default}</div>`;
+      }
+    });
+  </script>
+</body>
+</html>
