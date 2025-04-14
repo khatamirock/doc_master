@@ -144,18 +144,14 @@
           fields.forEach((field, index) => {
             const fieldGroup = document.createElement('div');
             fieldGroup.className = 'field-group';
-            
-            // Show field in context with highlighting
-            const contextBefore = field.position > 20 ? '...' : '';
-            const contextAfter = '...';
+
+            // Use the enhanced context from the backend
             const fieldContext = `
               <div class="field-context">
-                ${contextBefore}
-                <span class="field-preview">${field.currentValue}</span>
-                ${contextAfter}
+                ${field.fullContext.replace(/\*\*(.*?)\*\*/g, '<span class="field-preview">$1</span>')}
               </div>
             `;
-            
+
             // Generate example based on field type
             const example = getFieldExample(field.fieldType);
             

@@ -5,6 +5,7 @@ const { Readable } = require('stream');
 const fs = require('fs').promises;
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const path = require('path');
+require('dotenv').config(); // Load environment variables
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -15,7 +16,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
 
 // Initialize Gemini AI
-const genAI = new GoogleGenerativeAI('AIzaSyDgDe_5niOFm5ykcnXd6eb4RcLNhdAr5fs');
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API);
 
 async function extractTemplateFields(docText) {
   const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
@@ -37,7 +38,6 @@ async function extractTemplateFields(docText) {
     "currentValue": "value from document",
     "fieldType": "type of data",
     "position": "character position in document",
-    "context": "20 chars before and after",
     "validationRules": ["rule1", "rule2"],
     "dependencies": ["related field names"],
     "format": "expected format description"
@@ -56,48 +56,63 @@ async function extractTemplateFields(docText) {
     const cleanJson = jsonMatch[1] || text;
     const fields = JSON.parse(cleanJson);
 
-    // Add enhanced contextual information
+    // Add enhanced contextual information (5 words before/after)
     fields.forEach(field => {
-      // Find word boundaries for better context
-      const words = docText.split(/\b/);
-      const fieldStartIndex = docText.indexOf(field.currentValue);
+      const words = docText.split(/(\s+)/); // Split by whitespace, keeping delimiters
+      const fieldValueWords = field.currentValue.split(/(\s+)/);
       
-      // Find 5 words before and after
-      let beforeWords = [];
-      let afterWords = [];
-      let wordCount = 0;
-      let currentIndex = 0;
-      
-      // Get words before
-      for (let i = 0; i < words.length && wordCount < 5; i++) {
-        currentIndex += words[i].length;
-        if (currentIndex >= fieldStartIndex) break;
-        if (/\w+/.test(words[i])) {
-          beforeWords.push(words[i]);
-          wordCount++;
+      let startIndex = -1;
+      let endIndex = -1;
+
+      // Find the start and end index of the field value in the words array
+      for (let i = 0; i <= words.length - fieldValueWords.length; i++) {
+        let match = true;
+        for (let j = 0; j < fieldValueWords.length; j++) {
+          if (words[i + j] !== fieldValueWords[j]) {
+            match = false;
+            break;
+          }
+        }
+        if (match) {
+          startIndex = i;
+          endIndex = i + fieldValueWords.length -1;
+          break;
         }
       }
-      
-      // Get words after
-      wordCount = 0;
-      currentIndex = fieldStartIndex + field.currentValue.length;
-      for (let i = 0; i < words.length && wordCount < 5; i++) {
-        if (currentIndex < 0) {
-          currentIndex += words[i].length;
-          continue;
+
+      let contextBeforeWords = [];
+      let contextAfterWords = [];
+
+      if (startIndex !== -1) {
+        // Get 5 words before (ignoring whitespace entries)
+        let wordsFound = 0;
+        for (let i = startIndex - 1; i >= 0 && wordsFound < 5; i--) {
+          if (words[i].trim().length > 0) { // Check if it's a non-empty word
+             contextBeforeWords.unshift(words[i]);
+             wordsFound++;
+          } else if (contextBeforeWords.length > 0) { // Keep whitespace between words
+             contextBeforeWords.unshift(words[i]);
+          }
         }
-        if (/\w+/.test(words[i])) {
-          afterWords.push(words[i]);
-          wordCount++;
+
+        // Get 5 words after (ignoring whitespace entries)
+        wordsFound = 0;
+        for (let i = endIndex + 1; i < words.length && wordsFound < 5; i++) {
+           if (words[i].trim().length > 0) { // Check if it's a non-empty word
+             contextAfterWords.push(words[i]);
+             wordsFound++;
+           } else if (contextAfterWords.length > 0) { // Keep whitespace between words
+             contextAfterWords.push(words[i]);
+           }
         }
-        currentIndex += words[i].length;
       }
       
       // Store enhanced context
-      field.contextBefore = beforeWords.join('');
-      field.contextAfter = afterWords.join('');
-      field.fullContext = `...${field.contextBefore}【${field.currentValue}】${field.contextAfter}...`;
-      
+      field.contextBefore = contextBeforeWords.join('');
+      field.contextAfter = contextAfterWords.join('');
+      // Ensure context doesn't include the field value itself if it was captured due to splitting
+      field.fullContext = `...${field.contextBefore.trim()} **${field.currentValue}** ${field.contextAfter.trim()}...`;
+
       // Add default validation if not provided
       if (!field.validationRules) {
         field.validationRules = getDefaultValidationRules(field.fieldType);
