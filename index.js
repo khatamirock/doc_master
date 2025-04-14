@@ -156,6 +156,7 @@ function replaceFields(docText, fields) {
     updatedText = updatedText.replace(regex, field.newValue);
   }
   
+  // Optionally, you can add logic to handle the context before and after the field
   return updatedText;
 }
 
