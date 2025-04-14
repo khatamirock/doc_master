@@ -110,19 +110,121 @@
   <script>
     document.addEventListener('DOMContentLoaded', () => {
       const uploadForm = document.getElementById('uploadForm');
-      const generateForm = document.getElementById('generateForm');
+      // const generateForm = document.getElementById('generateForm'); // Removed
       const fieldsContainer = document.getElementById('fieldsContainer');
       const fieldsCard = document.getElementById('fieldsCard');
       const uploadLoading = document.getElementById('uploadLoading');
-      const generateLoading = document.getElementById('generateLoading');
+      // const generateLoading = document.getElementById('generateLoading'); // Removed
+      const uploadButton = uploadForm.querySelector('button[type="submit"]');
       
-      let fields = [];
+      let pollingInterval = null; // To store the interval ID
+
+      // Function to display fields once ready
+      function displayFields(fields) {
+        fieldsContainer.innerHTML = ''; // Clear previous fields
+        fields.forEach((field, index) => {
+          const fieldGroup = document.createElement('div');
+          fieldGroup.className = 'field-group';
+
+          const fieldContext = `
+            <div class="field-context">
+              ${field.fullContext.replace(/\*\*(.*?)\*\*/g, '<span class="field-preview">$1</span>')}
+            </div>
+          `;
+
+          const example = getFieldExample(field.fieldType);
+          
+          fieldGroup.innerHTML = `
+            ${fieldContext}
+            <label for="field_${index}" class="form-label">
+              <strong>${field.fieldName}</strong>
+              <span class="badge bg-secondary ms-2">${field.fieldType}</span>
+            </label>
+            <div class="input-group" data-tooltip="Type: ${field.fieldType}">
+              <span class="input-group-text">Current:</span>
+              <input type="text" 
+                class="form-control" 
+                id="field_${index}" 
+                name="field_${index}" 
+                value="${field.currentValue}"
+                placeholder="${example}"
+                required>
+            </div>
+            <div class="field-help">
+              <div class="field-example">Example: ${example}</div>
+              ${getFieldDescription(field.fieldType)}
+            </div>
+          `;
+          
+          fieldsContainer.appendChild(fieldGroup);
+        });
+        fieldsCard.style.display = 'block'; // Show the fields card
+      }
+
+      // Function to poll the status endpoint
+      function pollStatus(taskId) {
+        pollingInterval = setInterval(async () => {
+          try {
+            const response = await fetch(`/status/${taskId}`);
+            if (!response.ok) {
+              // Handle non-2xx responses if necessary, though server sends 200 for all states
+              console.warn(`Status check failed with status: ${response.status}`);
+              return; // Continue polling or implement retry logic
+            }
+            
+            const data = await response.json();
+            
+            if (data.status === 'complete') {
+              clearInterval(pollingInterval);
+              pollingInterval = null;
+              uploadLoading.style.display = 'none';
+              uploadButton.disabled = false; // Re-enable button
+              displayFields(data.fields);
+            } else if (data.status === 'error') {
+              clearInterval(pollingInterval);
+              pollingInterval = null;
+              uploadLoading.style.display = 'none';
+              uploadButton.disabled = false; // Re-enable button
+              alert(`Error processing document: ${data.message}`);
+              console.error('Processing error:', data.message);
+            } else if (data.status === 'processing') {
+              // Still processing, do nothing, wait for next interval
+              console.log('Still processing...');
+            } else {
+              // Unexpected status
+              clearInterval(pollingInterval);
+              pollingInterval = null;
+              uploadLoading.style.display = 'none';
+              uploadButton.disabled = false; // Re-enable button
+              alert(`Unexpected status received: ${data.status}`);
+              console.error('Unexpected status:', data);
+            }
+          } catch (error) {
+            // Network error or JSON parsing error
+            console.error('Polling error:', error);
+            // Optionally stop polling after too many errors
+            // clearInterval(pollingInterval);
+            // alert('Failed to get status update. Please try again later.');
+          }
+        }, 3000); // Poll every 3 seconds
+      }
       
       uploadForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         
+        // Clear previous results and hide card
+        fieldsContainer.innerHTML = '';
+        fieldsCard.style.display = 'none';
+        
+        // Stop any previous polling
+        if (pollingInterval) {
+          clearInterval(pollingInterval);
+          pollingInterval = null;
+        }
+
         const formData = new FormData(uploadForm);
         uploadLoading.style.display = 'block';
+        uploadButton.disabled = true; // Disable button during processing
         
         try {
           const response = await fetch('/upload', {
@@ -130,111 +232,34 @@
             body: formData
           });
           
-          if (!response.ok) {
-            throw new Error(`Server responded with ${response.status}: ${await response.text()}`);
+          // Check for immediate errors from the /upload endpoint (e.g., 400, 500)
+          if (!response.ok && response.status !== 202) { // 202 is the expected success status
+             const errorData = await response.json().catch(() => ({ message: 'Unknown server error' }));
+             throw new Error(`Upload initiation failed: ${errorData.message || response.statusText}`);
           }
           
-          const data = await response.json();
-          fields = data.fields;
-          
-          // Clear previous fields
-          fieldsContainer.innerHTML = '';
-          
-          // Create form fields
-          fields.forEach((field, index) => {
-            const fieldGroup = document.createElement('div');
-            fieldGroup.className = 'field-group';
+          if (response.status === 202) {
+            const data = await response.json();
+            // Start polling
+            pollStatus(data.taskId);
+          } else {
+             // Should not happen if backend is correct, but handle unexpected success codes
+             throw new Error(`Unexpected response status: ${response.status}`);
+          }
 
-            // Use the enhanced context from the backend
-            const fieldContext = `
-              <div class="field-context">
-                ${field.fullContext.replace(/\*\*(.*?)\*\*/g, '<span class="field-preview">$1</span>')}
-              </div>
-            `;
-
-            // Generate example based on field type
-            const example = getFieldExample(field.fieldType);
-            
-            fieldGroup.innerHTML = `
-              ${fieldContext}
-              <label for="field_${index}" class="form-label">
-                <strong>${field.fieldName}</strong>
-                <span class="badge bg-secondary ms-2">${field.fieldType}</span>
-              </label>
-              <div class="input-group" data-tooltip="Type: ${field.fieldType}">
-                <span class="input-group-text">Current:</span>
-                <input type="text" 
-                  class="form-control" 
-                  id="field_${index}" 
-                  name="field_${index}" 
-                  value="${field.currentValue}"
-                  placeholder="${example}"
-                  required>
-              </div>
-              <div class="field-help">
-                <div class="field-example">Example: ${example}</div>
-                ${getFieldDescription(field.fieldType)}
-              </div>
-            `;
-            
-            fieldsContainer.appendChild(fieldGroup);
-          });
-          
-          // Show the fields card
-          fieldsCard.style.display = 'block';
         } catch (error) {
+          // Handle errors during the initial POST request
           alert(`Error: ${error.message}`);
-          console.error('Error:', error);
-        } finally {
+          console.error('Upload Error:', error);
           uploadLoading.style.display = 'none';
-        }
+          uploadButton.disabled = false; // Re-enable button on error
+        } 
+        // Note: 'finally' block removed as loading state is managed by polling now
       });
       
-      generateForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        
-        generateLoading.style.display = 'block';
-        
-        // Collect field values
-        const updatedFields = fields.map((field, index) => {
-          return {
-            ...field,
-            newValue: document.getElementById(`field_${index}`).value
-          };
-        });
-        
-        try {
-          const response = await fetch('/generate', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ fields: updatedFields })
-          });
-          
-          if (!response.ok) {
-            throw new Error(`Server responded with ${response.status}: ${await response.text()}`);
-          }
-          
-          // Create a download link
-          const blob = await response.blob();
-          const url = window.URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.style.display = 'none';
-          a.href = url;
-          a.download = 'updated_document.txt';
-          document.body.appendChild(a);
-          a.click();
-          window.URL.revokeObjectURL(url);
-        } catch (error) {
-          alert(`Error: ${error.message}`);
-          console.error('Error:', error);
-        } finally {
-          generateLoading.style.display = 'none';
-        }
-      });
-      
-      // Helper functions for field metadata
+      // generateForm event listener removed as the form is gone
+
+      // Helper functions for field metadata (remain unchanged)
       function getFieldExample(fieldType) {
         const examples = {
           'name': 'John Smith',
